@@ -175,7 +175,8 @@ const httpServer = http.createServer(async (req, res) => {
               break;
 
             case 'initialized':
-              // 确认初始化完成
+            case 'notifications/initialized':
+              // 确认初始化完成（通知，无需返回）
               result = {};
               break;
 
@@ -187,6 +188,11 @@ const httpServer = http.createServer(async (req, res) => {
             case 'tools/call':
               // 调用工具
               result = await toolHandlers(message);
+              break;
+
+            case 'ping':
+              // 心跳检测
+              result = {};
               break;
 
             default:
