@@ -75,6 +75,10 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 /**
  * 验证 API Key
+ * 支持三种方式：
+ * 1. Authorization: Bearer <key>
+ * 2. X-API-Key: <key>
+ * 3. URL参数: ?key=<key> 或 ?apiKey=<key>（用于钉钉等不支持自定义header的客户端）
  */
 function authenticateRequest(req: http.IncomingMessage): boolean {
   // 如果未启用认证，直接通过
@@ -82,25 +86,35 @@ function authenticateRequest(req: http.IncomingMessage): boolean {
     return true;
   }
 
-  // 从 Authorization header 获取 API Key
-  // 支持两种格式: "Bearer <key>" 或 "<key>"
-  const authHeader = req.headers['authorization'];
-  const xApiKey = req.headers['x-api-key'] as string;
+  let providedKey = '';
 
-  if (!authHeader && !xApiKey) {
-    return false;
+  // 1. 从 URL 参数获取（优先，用于钉钉）
+  if (req.url) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const keyFromQuery = url.searchParams.get('key') || url.searchParams.get('apiKey');
+    if (keyFromQuery) {
+      providedKey = keyFromQuery;
+    }
   }
 
-  let providedKey = '';
-  if (authHeader) {
-    // 支持 "Bearer TOKEN" 格式
-    if (authHeader.startsWith('Bearer ')) {
-      providedKey = authHeader.substring(7);
-    } else {
-      providedKey = authHeader;
+  // 2. 从 Authorization header 获取
+  if (!providedKey) {
+    const authHeader = req.headers['authorization'];
+    if (authHeader) {
+      if (authHeader.startsWith('Bearer ')) {
+        providedKey = authHeader.substring(7);
+      } else {
+        providedKey = authHeader;
+      }
     }
-  } else if (xApiKey) {
-    providedKey = xApiKey;
+  }
+
+  // 3. 从 X-API-Key header 获取
+  if (!providedKey) {
+    const xApiKey = req.headers['x-api-key'] as string;
+    if (xApiKey) {
+      providedKey = xApiKey;
+    }
   }
 
   return providedKey === API_KEY;
