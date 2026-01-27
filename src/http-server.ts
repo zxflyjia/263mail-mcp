@@ -1,30 +1,25 @@
 #!/usr/bin/env node
 
 import express from 'express';
-import http from 'http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHttpServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { TOOLS, createToolHandlers } from './tools.js';
-import { validateEnv } from './env.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { TOOLS } from './tools-definition.js';
+import { createToolHandlers } from './tools.js';
 import { Mail263Client } from './mail263Client.js';
 import { DingTalkClient } from './dingtalkClient.js';
 import { VerificationCodeManager } from './verificationManager.js';
 import dotenv from 'dotenv';
 
-// 加载环境变量
 dotenv.config();
 
-// 验证环境变量
-validateEnv();
+const app = express();
+app.use(express.json());
 
-// 获取 API Key（仅支持 Authorization: Bearer）
 const API_KEY = process.env.MCP_API_KEY;
 const REQUIRE_AUTH = process.env.REQUIRE_AUTH !== 'false';
 
 if (REQUIRE_AUTH && !API_KEY) {
-  console.error('[HTTP] 错误: 启用认证时必须设置 MCP_API_KEY 环境变量');
-  console.error('[HTTP] 提示: 设置 REQUIRE_AUTH=false 可以禁用认证（不推荐生产环境）');
+  console.error('必须设置 MCP_API_KEY 或将 REQUIRE_AUTH 设置为 false');
   process.exit(1);
 }
 
@@ -36,106 +31,71 @@ const mailClient = new Mail263Client({
   apiUrl: process.env.MAIL_263_API_URL || 'https://ma.263.net/api/mail/v2',
 });
 
-const dingTalkClient = new DingTalkClient({
-  appKey: process.env.DINGTALK_APP_KEY!,
-  appSecret: process.env.DINGTALK_APP_SECRET!,
-});
+const dingTalkClient = new DingTalkClient(
+  process.env.DINGTALK_APP_KEY!,
+  process.env.DINGTALK_APP_SECRET!
+);
 
 const verificationManager = new VerificationCodeManager();
 
-// 创建 MCP 服务器
-const mcpServer = new McpServer(
-  {
-    name: 'mcp-263mail-manager',
-    version: '2.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
-
-// 设置工具处理器（现在支持 ctx.session.id 用于状态管理）
-const toolHandlers = createToolHandlers(
-  mailClient,
-  dingTalkClient,
-  verificationManager
-);
-
-mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: TOOLS,
-}));
-
-mcpServer.setRequestHandler(CallToolRequestSchema, toolHandlers);
-
-// Streamable HTTP 传输配置（全面支持：会话、恢复、SSE可选、JSON响应模式）
-const transport = new StreamableHttpServerTransport({
-  enableSessions: true, // 启用会话管理（支持状态ful工具，如验证码）
-  enableResumability: true, // 支持流恢复（Last-Event-ID）
-  enableJsonResponse: false, // 禁用纯JSON模式，启用SSE流（全面支持）
-  // 可选：自定义SSE配置
-  sseOptions: {
-    maxChunkSize: 64 * 1024, // 64KB 块
-  },
+const mcpServer = new McpServer({
+  name: 'mcp-263mail-manager',
+  version: '2.0.0',
 });
 
-// 连接传输
+// 注册工具（当前SDK推荐方式）
+for (const tool of TOOLS) {
+  mcpServer.addTool(tool);
+}
+
+// 设置工具调用处理器
+const toolHandler = createToolHandlers(mailClient, dingTalkClient, verificationManager);
+mcpServer.setToolHandler(toolHandler);   // 如果此方法不存在，可换成下面方式
+
+// 如果上面 setToolHandler 不存在，用下面这种更通用方式
+// mcpServer.handleRequest = async (req) => {
+//   if (req.method === 'tools/call') {
+//     return toolHandler(req);
+//   }
+//   // 其他请求交给默认处理
+//   return mcpServer.defaultHandler(req);
+// };
+
+const transport = new StreamableHTTPServerTransport({
+  sessionEnabled: true,
+  resumable: true,
+  jsonResponseEnabled: false,
+});
+
 await mcpServer.connect(transport);
 
-// 创建 Express 应用（用于 /health 和认证）
-const app = express();
-app.use(express.json({ limit: '10mb' }));
-
-// 健康检查端点（无需认证）
+// 健康检查
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    version: '2.0.0',
-    transport: 'streamable-http',
-    sessions: 'enabled',
-  });
+  res.json({ status: 'ok', version: '2.0.0', mode: 'streamable-http' });
 });
 
-// 认证中间件（仅支持 Authorization: Bearer，移除 X-API-Key）
+// 认证中间件
 const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (!REQUIRE_AUTH) return next();
 
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({
-      error: 'Unauthorized',
-      message: 'Missing or invalid Authorization: Bearer header',
-    });
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return res.status(401).json({ error: '缺少或无效的 Authorization: Bearer' });
   }
 
-  const providedKey = authHeader.substring(7);
-  if (providedKey !== API_KEY) {
-    return res.status(401).json({
-      error: 'Unauthorized',
-      message: 'Invalid API key',
-    });
+  const key = auth.slice(7);
+  if (key !== API_KEY) {
+    return res.status(401).json({ error: 'API Key 无效' });
   }
 
   next();
 };
 
-// MCP 端点（应用认证 + Streamable HTTP 处理器）
-app.use('/mcp', authMiddleware, transport.createRequestHandler());
+app.use('/mcp', authMiddleware, transport.handler());
 
-// 启动服务器
-const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-const server = app.listen(PORT, () => {
-  console.log(`[HTTP] 263邮箱MCP Server已启动 (v2.0.0 - Streamable HTTP模式)`);
-  console.log(`[HTTP] 端点: http://localhost:${PORT}/mcp (POST/GET)`);
-  console.log(`[HTTP] 健康检查: http://localhost:${PORT}/health`);
-  console.log(`[HTTP] 认证: Authorization: Bearer ${API_KEY ? '***' : 'disabled'}`);
-});
-
-// 优雅关闭
-process.on('SIGINT', () => {
-  server.close(() => {
-    console.log('[HTTP] 服务器已关闭');
-    process.exit(0);
-  });
+// 启动
+const PORT = Number(process.env.PORT) || 3000;
+app.listen(PORT, () => {
+  console.log(`MCP Server (Streamable HTTP) 运行于 http://0.0.0.0:${PORT}/mcp`);
+  console.log(`健康检查: http://localhost:${PORT}/health`);
 });
