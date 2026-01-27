@@ -145,8 +145,8 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
 
-    // MCP 消息端点 (Streamable HTTP) - 需要认证
-    if (req.url === '/mcp' && req.method === 'POST') {
+    // MCP 端点 - 支持 GET (SSE) 和 POST (JSON-RPC)
+    if (req.url?.startsWith('/mcp')) {
       // 验证认证
       if (!authenticateRequest(req)) {
         console.error('[HTTP] 认证失败 - 无效或缺失的 API Key');
@@ -160,6 +160,30 @@ const httpServer = http.createServer(async (req, res) => {
         return;
       }
 
+      // GET 请求 = SSE 连接（钉钉模式）
+      if (req.method === 'GET') {
+        console.error('[HTTP] 建立 SSE 连接');
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+
+        res.write('data: {"type":"connected"}\n\n');
+
+        const keepAlive = setInterval(() => {
+          res.write(': keepalive\n\n');
+        }, 30000);
+
+        req.on('close', () => {
+          clearInterval(keepAlive);
+          console.error('[SSE] 客户端断开连接');
+        });
+
+        return;
+      }
+
+      // POST 请求 = JSON-RPC
       let body = '';
       req.on('data', (chunk) => {
         body += chunk.toString();
