@@ -1,4 +1,3 @@
-// src/tools.ts (更新为支持 ctx.session.id，无遗漏)
 import {
   CallToolRequestSchema,
   CallToolResult,

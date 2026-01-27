@@ -1,4 +1,3 @@
-// src/http-server.ts (重写为Streamable HTTP，支持全面协议，无遗漏)
 #!/usr/bin/env node
 
 import express from 'express';

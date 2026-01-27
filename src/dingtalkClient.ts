@@ -1,5 +1,3 @@
-// src/dingtalkClient.ts (小更新：添加 sendVerificationCode 方法)
- // ... 现有代码保持不变，添加以下方法
 
   /**
    * 发送验证码到员工钉钉
