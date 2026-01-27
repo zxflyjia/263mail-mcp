@@ -156,17 +156,41 @@ const httpServer = http.createServer(async (req, res) => {
           const message = JSON.parse(body);
           console.error('[HTTP] 收到请求:', message.method);
 
-          // 根据消息类型处理
-          let response;
-          if (message.method === 'tools/list') {
-            response = await server.request(
-              { method: 'tools/list', params: {} },
-              ListToolsRequestSchema
-            );
-          } else if (message.method === 'tools/call') {
-            response = await server.request(message, CallToolRequestSchema);
-          } else {
-            throw new Error(`Unsupported method: ${message.method}`);
+          let result;
+
+          // 处理 MCP 协议的各种方法
+          switch (message.method) {
+            case 'initialize':
+              // MCP 初始化握手
+              result = {
+                protocolVersion: '2024-11-05',
+                capabilities: {
+                  tools: {},
+                },
+                serverInfo: {
+                  name: 'mcp-263mail-manager',
+                  version: '10.0.1',
+                },
+              };
+              break;
+
+            case 'initialized':
+              // 确认初始化完成
+              result = {};
+              break;
+
+            case 'tools/list':
+              // 返回工具列表
+              result = { tools: TOOLS };
+              break;
+
+            case 'tools/call':
+              // 调用工具
+              result = await toolHandlers(message);
+              break;
+
+            default:
+              throw new Error(`Unsupported method: ${message.method}`);
           }
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -174,7 +198,7 @@ const httpServer = http.createServer(async (req, res) => {
             JSON.stringify({
               jsonrpc: '2.0',
               id: message.id,
-              result: response,
+              result,
             })
           );
         } catch (error) {
