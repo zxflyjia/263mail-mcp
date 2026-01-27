@@ -27,10 +27,10 @@ const mailClient = new Mail263Client({
   apiUrl: process.env.MAIL_263_API_URL || 'https://ma.263.net/api/mail/v2',
 });
 
-const dingTalkClient = new DingTalkClient({
-  appKey: process.env.DINGTALK_APP_KEY!,
-  appSecret: process.env.DINGTALK_APP_SECRET!,
-});
+const dingTalkClient = new DingTalkClient(
+  process.env.DINGTALK_APP_KEY!,
+  process.env.DINGTALK_APP_SECRET!
+);
 
 const verificationManager = new VerificationCodeManager();
 
