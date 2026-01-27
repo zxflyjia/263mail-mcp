@@ -1,11 +1,16 @@
+// src/http-server.ts (重写为Streamable HTTP，支持全面协议，无遗漏)
 #!/usr/bin/env node
 
+import express from 'express';
 import http from 'http';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHttpServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { TOOLS, createToolHandlers } from './tools.js';
+import { validateEnv } from './env.js';
 import { Mail263Client } from './mail263Client.js';
 import { DingTalkClient } from './dingtalkClient.js';
 import { VerificationCodeManager } from './verificationManager.js';
-import { TOOLS, createToolHandlers } from './tools.js';
-import { validateEnv } from './env.js';
 import dotenv from 'dotenv';
 
 // 加载环境变量
@@ -14,13 +19,13 @@ dotenv.config();
 // 验证环境变量
 validateEnv();
 
-// 获取 API Key（如果启用认证）
+// 获取 API Key（仅支持 Authorization: Bearer）
 const API_KEY = process.env.MCP_API_KEY;
 const REQUIRE_AUTH = process.env.REQUIRE_AUTH !== 'false';
 
 if (REQUIRE_AUTH && !API_KEY) {
   console.error('[HTTP] 错误: 启用认证时必须设置 MCP_API_KEY 环境变量');
-  console.error('[HTTP] 提示: 设置 REQUIRE_AUTH=false 可以禁用认证（不推荐）');
+  console.error('[HTTP] 提示: 设置 REQUIRE_AUTH=false 可以禁用认证（不推荐生产环境）');
   process.exit(1);
 }
 
@@ -39,224 +44,99 @@ const dingTalkClient = new DingTalkClient({
 
 const verificationManager = new VerificationCodeManager();
 
-// 设置请求处理器
+// 创建 MCP 服务器
+const mcpServer = new McpServer(
+  {
+    name: 'mcp-263mail-manager',
+    version: '2.0.0',
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
+
+// 设置工具处理器（现在支持 ctx.session.id 用于状态管理）
 const toolHandlers = createToolHandlers(
   mailClient,
   dingTalkClient,
   verificationManager
 );
 
-// 创建 HTTP 服务器
-const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: TOOLS,
+}));
 
-/**
- * 验证 API Key
- */
-function authenticateRequest(req: http.IncomingMessage): boolean {
-  if (!REQUIRE_AUTH) return true;
+mcpServer.setRequestHandler(CallToolRequestSchema, toolHandlers);
 
-  let providedKey = '';
-
-  // URL 参数
-  if (req.url) {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const keyFromQuery = url.searchParams.get('key') || url.searchParams.get('apiKey');
-    if (keyFromQuery) providedKey = keyFromQuery;
-  }
-
-  // Authorization header
-  if (!providedKey) {
-    const authHeader = req.headers['authorization'];
-    if (authHeader) {
-      providedKey = authHeader.startsWith('Bearer ')
-        ? authHeader.substring(7)
-        : authHeader;
-    }
-  }
-
-  // X-API-Key header
-  if (!providedKey) {
-    const xApiKey = req.headers['x-api-key'] as string;
-    if (xApiKey) providedKey = xApiKey;
-  }
-
-  return providedKey === API_KEY;
-}
-
-// SSE 客户端管理
-interface SSEClient {
-  id: string;
-  res: http.ServerResponse;
-}
-
-const sseClients = new Map<string, SSEClient>();
-
-function sendSSE(client: SSEClient, data: any) {
-  try {
-    client.res.write(`data: ${JSON.stringify(data)}\n\n`);
-  } catch (error) {
-    console.error('[SSE] 发送失败:', error);
-  }
-}
-
-const httpServer = http.createServer(async (req, res) => {
-  // CORS
-  const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
-  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(200);
-    res.end();
-    return;
-  }
-
-  try {
-    // 健康检查
-    if (req.url === '/health' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', version: '10.0.2' }));
-      return;
-    }
-
-    // SSE 连接 - GET /sse
-    if (req.url?.startsWith('/sse') && req.method === 'GET') {
-      if (!authenticateRequest(req)) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Unauthorized' }));
-        return;
-      }
-
-      console.error('[SSE] 建立连接');
-
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-
-      const clientId = `client_${Date.now()}`;
-      const client: SSEClient = { id: clientId, res };
-      sseClients.set(clientId, client);
-
-      console.error(`[SSE] 客户端连接: ${clientId}, 总数: ${sseClients.size}`);
-
-      // 发送初始化通知
-      sendSSE(client, {
-        jsonrpc: '2.0',
-        method: 'notifications/initialized',
-        params: {},
-      });
-
-      // 心跳
-      const keepAlive = setInterval(() => res.write(': keepalive\n\n'), 15000);
-
-      req.on('close', () => {
-        clearInterval(keepAlive);
-        sseClients.delete(clientId);
-        console.error(`[SSE] 客户端断开: ${clientId}, 剩余: ${sseClients.size}`);
-      });
-
-      return;
-    }
-
-    // 消息端点 - POST /message
-    if (req.url?.startsWith('/message') && req.method === 'POST') {
-      if (!authenticateRequest(req)) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Unauthorized' }));
-        return;
-      }
-
-      let body = '';
-      req.on('data', (chunk) => (body += chunk.toString()));
-      req.on('end', async () => {
-        try {
-          const message = JSON.parse(body);
-          console.error('[HTTP] 收到:', message.method);
-
-          let result: any;
-
-          switch (message.method) {
-            case 'initialize':
-              result = {
-                protocolVersion: '2024-11-05',
-                capabilities: { tools: {} },
-                serverInfo: { name: 'mcp-263mail-manager', version: '10.0.2' },
-              };
-              break;
-
-            case 'notifications/initialized':
-              res.writeHead(202, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ accepted: true }));
-              return;
-
-            case 'tools/list':
-              result = { tools: TOOLS };
-              break;
-
-            case 'tools/call':
-              result = await toolHandlers(message);
-              break;
-
-            case 'prompts/list':
-              result = { prompts: [] };
-              break;
-
-            case 'resources/list':
-              result = { resources: [] };
-              break;
-
-            case 'ping':
-              result = {};
-              break;
-
-            default:
-              throw new Error(`Unsupported: ${message.method}`);
-          }
-
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
-        } catch (error) {
-          console.error('[HTTP] 错误:', error);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(
-            JSON.stringify({
-              jsonrpc: '2.0',
-              id: null,
-              error: { code: -32603, message: error instanceof Error ? error.message : 'Error' },
-            })
-          );
-        }
-      });
-      return;
-    }
-
-    // 404
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found' }));
-  } catch (error) {
-    console.error('[HTTP] 服务器错误:', error);
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Internal error' }));
-  }
+// Streamable HTTP 传输配置（全面支持：会话、恢复、SSE可选、JSON响应模式）
+const transport = new StreamableHttpServerTransport({
+  enableSessions: true, // 启用会话管理（支持状态ful工具，如验证码）
+  enableResumability: true, // 支持流恢复（Last-Event-ID）
+  enableJsonResponse: false, // 禁用纯JSON模式，启用SSE流（全面支持）
+  // 可选：自定义SSE配置
+  sseOptions: {
+    maxChunkSize: 64 * 1024, // 64KB 块
+  },
 });
 
-// 启动
-httpServer.listen(PORT, () => {
-  console.error(`[HTTP] 263邮箱MCP Server (SSE模式) 已启动`);
-  console.error(`[HTTP] 监听端口: ${PORT}`);
-  console.error(`[HTTP] 认证: ${REQUIRE_AUTH ? '已启用' : '已禁用'}`);
-  if (REQUIRE_AUTH) console.error(`[HTTP] API Key: ${API_KEY?.substring(0, 8)}...`);
-  console.error(`[HTTP] 健康检查: http://localhost:${PORT}/health`);
-  console.error(`[HTTP] SSE连接: GET http://localhost:${PORT}/sse`);
-  console.error(`[HTTP] 消息端点: POST http://localhost:${PORT}/message`);
+// 连接传输
+await mcpServer.connect(transport);
+
+// 创建 Express 应用（用于 /health 和认证）
+const app = express();
+app.use(express.json({ limit: '10mb' }));
+
+// 健康检查端点（无需认证）
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    version: '2.0.0',
+    transport: 'streamable-http',
+    sessions: 'enabled',
+  });
+});
+
+// 认证中间件（仅支持 Authorization: Bearer，移除 X-API-Key）
+const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (!REQUIRE_AUTH) return next();
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Missing or invalid Authorization: Bearer header',
+    });
+  }
+
+  const providedKey = authHeader.substring(7);
+  if (providedKey !== API_KEY) {
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Invalid API key',
+    });
+  }
+
+  next();
+};
+
+// MCP 端点（应用认证 + Streamable HTTP 处理器）
+app.use('/mcp', authMiddleware, transport.createRequestHandler());
+
+// 启动服务器
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+const server = app.listen(PORT, () => {
+  console.log(`[HTTP] 263邮箱MCP Server已启动 (v2.0.0 - Streamable HTTP模式)`);
+  console.log(`[HTTP] 端点: http://localhost:${PORT}/mcp (POST/GET)`);
+  console.log(`[HTTP] 健康检查: http://localhost:${PORT}/health`);
+  console.log(`[HTTP] 认证: Authorization: Bearer ${API_KEY ? '***' : 'disabled'}`);
 });
 
 // 优雅关闭
-process.on('SIGTERM', () => {
-  console.error('[HTTP] 关闭中...');
-  httpServer.close(() => process.exit(0));
+process.on('SIGINT', () => {
+  server.close(() => {
+    console.log('[HTTP] 服务器已关闭');
+    process.exit(0);
+  });
 });

@@ -1,4 +1,5 @@
-interface VerificationData {
+// src/verificationManager.ts (更新为 per-session，支持全面状态管理)
+interface Verification {
   code: string;
   password: string;
   expireTime: number;
@@ -12,7 +13,7 @@ interface ValidationResult {
 }
 
 export class VerificationCodeManager {
-  private verifications: Map<string, VerificationData> = new Map();
+  private verifications = new Map<string, Map<string, Verification>>(); // sessionId -> employeeId -> Verification
   private readonly CODE_EXPIRE_TIME = 5 * 60 * 1000; // 5分钟
   private readonly MAX_ATTEMPTS = 3; // 最大尝试次数
 
@@ -24,33 +25,43 @@ export class VerificationCodeManager {
   }
 
   /**
-   * 为员工生成验证码
+   * 为指定会话的员工生成验证码
    */
-  generateCode(employeeId: string, password: string): string {
+  generateCode(sessionId: string, employeeId: string, password: string): string {
+    const sessionMap = this.verifications.get(sessionId) || new Map<string, Verification>();
     const code = this.generateRandomCode();
     const expireTime = Date.now() + this.CODE_EXPIRE_TIME;
 
-    this.verifications.set(employeeId, {
+    sessionMap.set(employeeId, {
       code,
       password,
       expireTime,
       attempts: 0,
     });
 
-    // 定时清理过期验证码
+    this.verifications.set(sessionId, sessionMap);
+
+    // 定时清理
     setTimeout(() => {
-      this.clearCode(employeeId);
+      this.clearCode(sessionId, employeeId);
     }, this.CODE_EXPIRE_TIME);
 
     return code;
   }
 
   /**
-   * 验证验证码
+   * 验证指定会话的验证码
    */
-  validateCode(employeeId: string, inputCode: string): ValidationResult {
-    const verification = this.verifications.get(employeeId);
+  validateCode(sessionId: string, employeeId: string, inputCode: string): ValidationResult {
+    const sessionMap = this.verifications.get(sessionId);
+    if (!sessionMap) {
+      return {
+        valid: false,
+        message: '会话无效或验证码不存在，请重新发起',
+      };
+    }
 
+    const verification = sessionMap.get(employeeId);
     if (!verification) {
       return {
         valid: false,
@@ -58,9 +69,9 @@ export class VerificationCodeManager {
       };
     }
 
-    // 检查是否过期
+    // 检查过期
     if (Date.now() > verification.expireTime) {
-      this.clearCode(employeeId);
+      this.clearCode(sessionId, employeeId);
       return {
         valid: false,
         message: '验证码已过期，请重新发起密码重置请求',
@@ -69,33 +80,31 @@ export class VerificationCodeManager {
 
     // 检查尝试次数
     if (verification.attempts >= this.MAX_ATTEMPTS) {
-      this.clearCode(employeeId);
+      this.clearCode(sessionId, employeeId);
       return {
         valid: false,
         message: '验证码输入错误次数过多，请重新发起密码重置请求',
       };
     }
 
-    // 验证码校验
+    // 校验
     if (verification.code !== inputCode) {
       verification.attempts++;
-      const remainingAttempts = this.MAX_ATTEMPTS - verification.attempts;
-      
-      if (remainingAttempts === 0) {
-        this.clearCode(employeeId);
+      const remaining = this.MAX_ATTEMPTS - verification.attempts;
+      if (remaining === 0) {
+        this.clearCode(sessionId, employeeId);
         return {
           valid: false,
-          message: '验证码错误，已达最大尝试次数，请重新发起密码重置请求',
+          message: '验证码错误，已达最大尝试次数，请重新发起',
         };
       }
-
       return {
         valid: false,
-        message: `验证码错误，还有 ${remainingAttempts} 次尝试机会`,
+        message: `验证码错误，还有 ${remaining} 次尝试机会`,
       };
     }
 
-    // 验证成功
+    // 成功
     return {
       valid: true,
       message: '验证成功',
@@ -104,19 +113,26 @@ export class VerificationCodeManager {
   }
 
   /**
-   * 清除验证码
+   * 清除指定会话的验证码
    */
-  clearCode(employeeId: string): void {
-    this.verifications.delete(employeeId);
+  clearCode(sessionId: string, employeeId: string): void {
+    const sessionMap = this.verifications.get(sessionId);
+    if (sessionMap) {
+      sessionMap.delete(employeeId);
+      if (sessionMap.size === 0) {
+        this.verifications.delete(sessionId);
+      }
+    }
   }
 
   /**
-   * 获取剩余有效时间（秒）
+   * 获取剩余时间（秒）
    */
-  getRemainingTime(employeeId: string): number {
-    const verification = this.verifications.get(employeeId);
+  getRemainingTime(sessionId: string, employeeId: string): number {
+    const sessionMap = this.verifications.get(sessionId);
+    if (!sessionMap) return 0;
+    const verification = sessionMap.get(employeeId);
     if (!verification) return 0;
-
     const remaining = Math.max(0, verification.expireTime - Date.now());
     return Math.floor(remaining / 1000);
   }
