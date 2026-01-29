@@ -46,6 +46,59 @@ app.use((req, res, next) => {
   }
 
   console.error(`${'='.repeat(80)}\n`);
+
+  // 拦截响应，打印返回给钉钉的数据
+  const originalJson = res.json.bind(res);
+  const originalSend = res.send.bind(res);
+  const originalWrite = res.write.bind(res);
+  const originalEnd = res.end.bind(res);
+
+  // 拦截 res.json()
+  res.json = function (body) {
+    console.error(`\n${'='.repeat(80)}`);
+    console.error(`[${new Date().toISOString()}] 📤 返回响应 (JSON)`);
+    console.error(`${'='.repeat(80)}`);
+    console.error(`[RESPONSE] 状态码: ${res.statusCode}`);
+    console.error(`[RESPONSE] Content-Type: application/json`);
+    console.error(`[RESPONSE] Body:`);
+    console.error(JSON.stringify(body, null, 2));
+    console.error(`${'='.repeat(80)}\n`);
+    return originalJson(body);
+  };
+
+  // 拦截 res.send()
+  res.send = function (body) {
+    console.error(`\n${'='.repeat(80)}`);
+    console.error(`[${new Date().toISOString()}] 📤 返回响应 (Send)`);
+    console.error(`${'='.repeat(80)}`);
+    console.error(`[RESPONSE] 状态码: ${res.statusCode}`);
+    console.error(`[RESPONSE] Body (前500字符):`, String(body).substring(0, 500));
+    console.error(`${'='.repeat(80)}\n`);
+    return originalSend(body);
+  };
+
+  // 拦截 res.write() - 用于 SSE 流
+  let sseDataBuffer = '';
+  res.write = function (chunk: any, ...args: any[]) {
+    const data = String(chunk);
+
+    // 只打印重要内容，跳过心跳
+    if (!data.startsWith(': keepalive')) {
+      console.error(`[SSE] 📡 发送数据: ${data.trim()}`);
+      sseDataBuffer += data;
+    }
+
+    return originalWrite(chunk, ...args);
+  };
+
+  // 拦截 res.end()
+  res.end = function (chunk?: any, ...args: any[]) {
+    if (sseDataBuffer) {
+      console.error(`\n[SSE] 📊 累计发送数据总量: ${sseDataBuffer.length} 字节`);
+    }
+    return originalEnd(chunk, ...args);
+  };
+
   next();
 });
 
