@@ -16,14 +16,36 @@ dotenv.config();
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
-// 请求日志中间件
+// 请求日志中间件 - 打印所有钉钉发来的数据
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
-  console.error(`\n[${timestamp}] ${req.method} ${req.url}`);
-  console.error(`[HTTP] Headers:`, JSON.stringify(req.headers, null, 2));
+  console.error(`\n${'='.repeat(80)}`);
+  console.error(`[${timestamp}] 📥 收到请求`);
+  console.error(`${'='.repeat(80)}`);
+  console.error(`[HTTP] 方法: ${req.method}`);
+  console.error(`[HTTP] 完整URL: ${req.url}`);
+  console.error(`[HTTP] 路径: ${req.path}`);
+  console.error(`[HTTP] Query参数:`, JSON.stringify(req.query, null, 2));
+  console.error(`[HTTP] 来源IP: ${req.ip || req.socket.remoteAddress}`);
+  console.error(`[HTTP] User-Agent: ${req.headers['user-agent']}`);
+  console.error(`\n[HTTP] 所有Headers:`);
+  console.error(JSON.stringify(req.headers, null, 2));
+
   if (req.body && Object.keys(req.body).length > 0) {
-    console.error(`[HTTP] Body:`, JSON.stringify(req.body, null, 2));
+    console.error(`\n[HTTP] Body 内容:`);
+    console.error(JSON.stringify(req.body, null, 2));
   }
+
+  // 检查是否有钉钉特殊 header
+  const dingHeaders = Object.keys(req.headers).filter(h => h.toLowerCase().includes('dingtalk'));
+  if (dingHeaders.length > 0) {
+    console.error(`\n[HTTP] 钉钉专用Headers:`);
+    dingHeaders.forEach(h => {
+      console.error(`  ${h}: ${req.headers[h]}`);
+    });
+  }
+
+  console.error(`${'='.repeat(80)}\n`);
   next();
 });
 
