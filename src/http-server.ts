@@ -100,21 +100,55 @@ const authMiddleware = (req: express.Request, res: express.Response, next: expre
     return next();
   }
 
-  const authHeader = req.headers.authorization;
-  console.error(`[AUTH] Authorization Header: ${authHeader ? authHeader.substring(0, 20) + '...' : '(无)'}`);
+  let token = '';
 
-  if (!authHeader?.startsWith('Bearer ')) {
-    console.error('[AUTH] ❌ 认证失败: 缺少 Bearer Token');
-    return res.status(401).json({ error: 'Unauthorized', message: '需要 Bearer Token' });
+  // 1. URL 参数（优先，用于钉钉）
+  const keyFromQuery = req.query.key || req.query.apiKey;
+  if (keyFromQuery) {
+    token = String(keyFromQuery);
+    console.error(`[AUTH] 从 URL 参数获取 Token: ${token.substring(0, 8)}...`);
   }
 
-  const token = authHeader.slice(7);
-  const isValid = token === API_KEY;
+  // 2. Authorization Header
+  if (!token) {
+    const authHeader = req.headers.authorization;
+    console.error(`[AUTH] Authorization Header: ${authHeader ? authHeader.substring(0, 20) + '...' : '(无)'}`);
 
+    if (authHeader?.startsWith('Bearer ')) {
+      token = authHeader.slice(7);
+      console.error(`[AUTH] 从 Header 获取 Token: ${token.substring(0, 8)}...`);
+    }
+  }
+
+  // 3. X-API-Key Header
+  if (!token) {
+    const xApiKey = req.headers['x-api-key'];
+    if (xApiKey) {
+      token = String(xApiKey);
+      console.error(`[AUTH] 从 X-API-Key 获取 Token: ${token.substring(0, 8)}...`);
+    }
+  }
+
+  // 验证
+  if (!token) {
+    console.error('[AUTH] ❌ 认证失败: 未提供 Token (Header 或 URL 参数)');
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: '需要认证: Authorization Bearer 或 URL参数 ?key=xxx',
+      hint: '钉钉配置示例: "url": "http://your-server/mcp?key=YOUR_API_KEY"'
+    });
+  }
+
+  const isValid = token === API_KEY;
   console.error(`[AUTH] Token 验证: ${isValid ? '✅ 通过' : '❌ 失败'}`);
 
   if (!isValid) {
-    return res.status(401).json({ error: 'Unauthorized', message: 'Token 无效' });
+    console.error(`[AUTH] 提供的 Token: ${token.substring(0, 8)}...`);
+    console.error(`[AUTH] 期望的 Token: ${API_KEY?.substring(0, 8)}...`);
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Token 无效',
+    });
   }
 
   next();
