@@ -34,7 +34,7 @@ app.use(express.json({ limit: '10mb' }));
  * ✅ 1. 钉钉心跳探活（必须最前 & 绝对纯净）
  * ===================================================== */
 app.get('/', (_req, res) => {
-  // 钉钉只看 200，不看内容
+  // 钉钉只看 HTTP 200
   res.status(200).send('OK');
 });
 
@@ -46,14 +46,16 @@ app.use((req, res, next) => {
 
   const ts = new Date().toISOString();
   console.error(`\n${'='.repeat(80)}`);
-  console.error(`[${ts}] 📥 HTTP ${req.method} ${req.originalUrl}`);
+  console.error(`[${ts}] 📥 ${req.method} ${req.originalUrl}`);
   console.error(`[IP] ${req.ip || req.socket.remoteAddress}`);
   console.error(`[UA] ${req.headers['user-agent']}`);
   console.error(`[Headers]`, req.headers);
 
   const rawSend = res.send.bind(res);
   res.send = (body: any) => {
-    console.error(`[RESP ${res.statusCode}]`, typeof body === 'string' ? body.slice(0, 300) : body);
+    console.error(`[RESP ${res.statusCode}]`,
+      typeof body === 'string' ? body.slice(0, 300) : body
+    );
     return rawSend(body);
   };
 
@@ -61,7 +63,7 @@ app.use((req, res, next) => {
 });
 
 /* =====================================================
- * 3. 健康检查（给人看的，不给钉钉）
+ * 3. 健康检查（给人看的）
  * ===================================================== */
 app.get('/health', (_req, res) => {
   res.json({
@@ -81,7 +83,8 @@ const mailClient = new Mail263Client({
   account: process.env.MAIL_263_ACCOUNT!,
   secret: process.env.MAIL_263_SECRET!,
   domain: process.env.MAIL_263_DOMAIN!,
-  apiUrl: process.env.MAIL_263_API_URL,
+  // ✅ 修复 TS2322：提供默认值，避免 undefined
+  apiUrl: process.env.MAIL_263_API_URL || 'https://ma.263.net/api/mail/v2',
 });
 
 const dingTalkClient = new DingTalkClient(
@@ -113,7 +116,9 @@ for (const tool of TOOLS) {
       description: tool.description,
       inputSchema: tool.inputSchema,
     },
-    (input, context) => toolHandler(tool.name, input, context)
+    // ✅ 修复 TS7006：显式声明 any
+    (input: any, context: any) =>
+      toolHandler(tool.name, input, context)
   );
 }
 
@@ -129,7 +134,11 @@ await mcpServer.connect(transport);
 /* =====================================================
  * 7. 鉴权（仅用于 /mcp）
  * ===================================================== */
-function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
+function authMiddleware(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
   if (!REQUIRE_AUTH) return next();
 
   let token = '';
@@ -187,8 +196,8 @@ app.delete('/mcp', authMiddleware, async (req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('🚀 MCP Server READY');
-  console.log(`🌐 MCP  : http://<公网IP>:${PORT}/mcp?key=***`);
-  console.log(`❤️  Root: GET / (钉钉探活)`);
+  console.log(`🌐 MCP   : http://<公网IP>:${PORT}/mcp?key=***`);
+  console.log(`❤️  Root : GET /   (钉钉探活)`);
   console.log(`🩺 Health: /health`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });
@@ -203,5 +212,6 @@ async function shutdown() {
     process.exit(0);
   });
 }
+
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
