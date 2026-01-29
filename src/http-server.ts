@@ -177,11 +177,51 @@ app.post('/mcp', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/mcp', authMiddleware, async (req, res) => {
+app.get('/mcp', async (req, res) => {
   console.error('[MCP] GET 请求 - 建立 SSE 连接');
+
+  // 检查认证（但不强制拦截，用于钉钉健康检查）
+  if (REQUIRE_AUTH) {
+    const keyFromQuery = req.query.key || req.query.apiKey;
+    const authHeader = req.headers.authorization;
+    const xApiKey = req.headers['x-api-key'];
+
+    let token = '';
+    if (keyFromQuery) token = String(keyFromQuery);
+    else if (authHeader?.startsWith('Bearer ')) token = authHeader.slice(7);
+    else if (xApiKey) token = String(xApiKey);
+
+    // 如果没有提供任何认证信息 - 钉钉健康检查
+    if (!token) {
+      console.error('[MCP] ⚠️  未提供认证 - 返回配置提示（钉钉健康检查）');
+      return res.status(200).json({
+        status: 'ready',
+        message: '263邮箱MCP服务器运行正常',
+        hint: '使用此服务需要认证',
+        config: {
+          钉钉配置: {
+            type: 'streamable-http',
+            url: `http://${req.headers.host}/mcp?key=YOUR_API_KEY`,
+          },
+          说明: '请将 YOUR_API_KEY 替换为实际的密钥',
+        },
+      });
+    }
+
+    // 提供了 token 但验证失败
+    if (token !== API_KEY) {
+      console.error('[MCP] ❌ Token 无效');
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'API Key 无效',
+      });
+    }
+
+    console.error('[MCP] ✅ 认证通过');
+  }
+
   try {
     // GET 方法：客户端建立 SSE 连接以接收服务器通知
-    // Transport 会建立持久 SSE 连接用于服务器到客户端的消息
     await transport.handleRequest(req, res);
     console.error('[MCP] ✅ SSE 连接已建立');
   } catch (err: any) {
