@@ -16,6 +16,17 @@ dotenv.config();
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// 请求日志中间件
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.error(`\n[${timestamp}] ${req.method} ${req.url}`);
+  console.error(`[HTTP] Headers:`, JSON.stringify(req.headers, null, 2));
+  if (req.body && Object.keys(req.body).length > 0) {
+    console.error(`[HTTP] Body:`, JSON.stringify(req.body, null, 2));
+  }
+  next();
+});
+
 const API_KEY = process.env.MCP_API_KEY;
 const REQUIRE_AUTH = process.env.REQUIRE_AUTH !== 'false';
 
@@ -84,15 +95,25 @@ app.get('/health', (req, res) => {
 
 // 认证中间件
 const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (!REQUIRE_AUTH) return next();
+  if (!REQUIRE_AUTH) {
+    console.error('[AUTH] 认证已禁用，直接通过');
+    return next();
+  }
 
   const authHeader = req.headers.authorization;
+  console.error(`[AUTH] Authorization Header: ${authHeader ? authHeader.substring(0, 20) + '...' : '(无)'}`);
+
   if (!authHeader?.startsWith('Bearer ')) {
+    console.error('[AUTH] ❌ 认证失败: 缺少 Bearer Token');
     return res.status(401).json({ error: 'Unauthorized', message: '需要 Bearer Token' });
   }
 
   const token = authHeader.slice(7);
-  if (token !== API_KEY) {
+  const isValid = token === API_KEY;
+
+  console.error(`[AUTH] Token 验证: ${isValid ? '✅ 通过' : '❌ 失败'}`);
+
+  if (!isValid) {
     return res.status(401).json({ error: 'Unauthorized', message: 'Token 无效' });
   }
 
@@ -102,37 +123,53 @@ const authMiddleware = (req: express.Request, res: express.Response, next: expre
 // MCP 端点 - 实现 Streamable HTTP 协议
 // 根据规范，必须支持 POST 和 GET 方法
 app.post('/mcp', authMiddleware, async (req, res) => {
+  console.error('[MCP] POST 请求开始处理');
+  console.error(`[MCP] 请求方法: ${req.body?.method}`);
   try {
     // POST 方法：客户端发送 JSON-RPC 请求
     // Transport 会处理请求并返回响应（可能是单个 JSON 或 SSE 流）
     await transport.handleRequest(req, res, req.body);
-  } catch (err) {
-    console.error('POST /mcp 处理错误:', err);
+    console.error('[MCP] ✅ POST 请求处理完成');
+  } catch (err: any) {
+    console.error('[MCP] ❌ POST /mcp 处理错误:', err.message);
+    console.error('[MCP] 错误堆栈:', err.stack);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Internal Server Error' });
+      res.status(500).json({
+        error: 'Internal Server Error',
+        message: err.message,
+        stack: err.stack?.split('\n').slice(0, 5).join('\n'),
+      });
     }
   }
 });
 
 app.get('/mcp', authMiddleware, async (req, res) => {
+  console.error('[MCP] GET 请求 - 建立 SSE 连接');
   try {
     // GET 方法：客户端建立 SSE 连接以接收服务器通知
     // Transport 会建立持久 SSE 连接用于服务器到客户端的消息
     await transport.handleRequest(req, res);
-  } catch (err) {
-    console.error('GET /mcp 处理错误:', err);
+    console.error('[MCP] ✅ SSE 连接已建立');
+  } catch (err: any) {
+    console.error('[MCP] ❌ GET /mcp 处理错误:', err.message);
+    console.error('[MCP] 错误堆栈:', err.stack);
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Internal Server Error' });
+      res.status(500).json({
+        error: 'Internal Server Error',
+        message: err.message,
+      });
     }
   }
 });
 
 // DELETE 方法：根据协议规范，用于终止会话
 app.delete('/mcp', authMiddleware, async (req, res) => {
+  console.error('[MCP] DELETE 请求 - 终止会话');
   try {
     await transport.handleRequest(req, res);
-  } catch (err) {
-    console.error('DELETE /mcp 处理错误:', err);
+    console.error('[MCP] ✅ 会话已终止');
+  } catch (err: any) {
+    console.error('[MCP] ❌ DELETE /mcp 处理错误:', err.message);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Internal Server Error' });
     }
